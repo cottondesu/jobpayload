@@ -162,14 +162,42 @@ class CLITest < Minitest::Test
     end
   end
 
+  # Under a UTF-8 locale (as on CI) ARGV strings are tagged UTF-8, so a path
+  # with non-UTF-8 bytes is an invalid string; under the C locale it is not.
+  # Both must work: the file system gets the exact bytes, and only output is
+  # scrubbed to valid UTF-8.
+  NON_UTF8_LOCALES = [{ "LANG" => "C.UTF-8", "LC_ALL" => "C.UTF-8" }, { "LANG" => "C", "LC_ALL" => "C" }].freeze
+
   def test_snapshot_json_with_an_output_path_that_is_not_utf8
-    Dir.mktmpdir do |dir|
-      output = File.join(dir, "out\xFF".b)
-      out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, "--format", "json")
-      assert_equal 0, code, err
-      paths = JSON.parse(out.force_encoding(Encoding::UTF_8))["fixtures"].map { |f| f["path"] }
-      assert_equal 30, paths.size
-      assert(paths.all? { |path| path.include?("out\uFFFD/") })
+    NON_UTF8_LOCALES.each do |locale|
+      Dir.mktmpdir do |dir|
+        output = File.join(dir, "out\xFF".b)
+        out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, "--format", "json",
+          env: locale)
+        assert_equal 0, code, "#{locale}: #{err}"
+        assert_equal ["out\xFF".b], Dir.children(dir).map(&:b), "the directory name keeps its original bytes"
+        assert_equal 30, Dir.children(output).size
+        paths = JSON.parse(out.force_encoding(Encoding::UTF_8))["fixtures"].map { |f| f["path"] }
+        assert_equal 30, paths.size
+        assert(paths.all? { |path| path.include?("out\uFFFD/") }, locale.inspect)
+      end
+    end
+  end
+
+  def test_text_output_and_check_with_a_fixture_path_that_is_not_utf8
+    NON_UTF8_LOCALES.each do |locale|
+      Dir.mktmpdir do |dir|
+        output = File.join(dir, "out\xFF".b)
+        out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, env: locale)
+        assert_equal 0, code, "#{locale}: #{err}"
+        out.force_encoding(Encoding::UTF_8)
+        assert out.valid_encoding?, locale.inspect
+        assert_includes out, "out\uFFFD/billing-money-v1.json"
+
+        out, err, code = run_cli("check", "--boot", v1_boot, "--fixtures", output, "--format", "json", env: locale)
+        assert_equal 0, code, "#{locale}: #{err}"
+        assert_equal 30, JSON.parse(out.force_encoding(Encoding::UTF_8))["summary"]["fixtures"]
+      end
     end
   end
 

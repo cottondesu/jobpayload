@@ -31,7 +31,11 @@ module JobPayload
     TEXT
 
     def initialize(argv, stdout: $stdout, stderr: $stderr)
-      @argv = argv.dup
+      # An argument that is not valid in its encoding (for example a path
+      # with non-UTF-8 bytes under a UTF-8 locale) makes OptionParser's regexp
+      # matching raise. Keep its exact bytes as a binary string, which is safe
+      # for option parsing and file system calls; only output is scrubbed.
+      @argv = argv.map { |arg| arg.valid_encoding? ? arg.dup : arg.b }
       @stdout = stdout
       @stderr = stderr
       @debug = false
@@ -177,7 +181,7 @@ module JobPayload
 
     def snapshot_text(entries)
       lines = entries.map do |entry|
-        line = format("%-9s %s  %s", entry.status, entry.name, entry.path)
+        line = format("%-9s %s  %s", entry.status, entry.name, JobPayload.scrub_utf8(entry.path))
         entry.status == :skipped ? "#{line}  (exists and differs; pass --update to replace)" : line
       end
       counts = entries.map(&:status).tally
