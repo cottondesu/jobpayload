@@ -1,0 +1,27 @@
+{
+  "job": {
+    "arguments": [
+      "rebuild-index"
+    ],
+    "enqueued_at": "2000-01-01T00:00:00.000000000Z",
+    "exception_executions": {},
+    "executions": 0,
+    "job_class": "TenantJob",
+    "job_id": "00000000-0000-0000-0000-000000000000",
+    "locale": "en",
+    "priority": null,
+    "provider_job_id": null,
+    "queue_name": "default",
+    "scheduled_at": null,
+    "tenant_id": 42,
+    "timezone": "Asia/Tokyo"
+  },
+  "jobpayload_schema": 1,
+  "name": "tenant-v1",
+  "source": {
+    "active_job_version": "7.2.3",
+    "jobpayload_version": "0.1.0",
+    "rails_version": null,
+    "ruby_version": "3.3.6"
+  }
+}

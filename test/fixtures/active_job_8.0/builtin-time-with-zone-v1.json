@@ -1,0 +1,30 @@
+{
+  "job": {
+    "arguments": [
+      {
+        "_aj_serialized": "ActiveJob::Serializers::TimeWithZoneSerializer",
+        "time_zone": "Asia/Tokyo",
+        "value": "2024-06-01T09:30:00.000000000+09:00"
+      }
+    ],
+    "enqueued_at": "2000-01-01T00:00:00.000000000Z",
+    "exception_executions": {},
+    "executions": 0,
+    "job_class": "BuiltinTypesJob",
+    "job_id": "00000000-0000-0000-0000-000000000000",
+    "locale": "en",
+    "priority": null,
+    "provider_job_id": null,
+    "queue_name": "default",
+    "scheduled_at": null,
+    "timezone": "Asia/Tokyo"
+  },
+  "jobpayload_schema": 1,
+  "name": "builtin-time-with-zone-v1",
+  "source": {
+    "active_job_version": "8.0.5.1",
+    "jobpayload_version": "0.1.0",
+    "rails_version": null,
+    "ruby_version": "3.3.6"
+  }
+}

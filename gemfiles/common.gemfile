@@ -1,0 +1,6 @@
+# frozen_string_literal: true
+
+# Development and test dependencies shared by every Gemfile in the matrix.
+gem "rake", "~> 13.0"
+gem "minitest", ">= 5.20", "< 7"
+gem "sqlite3", ">= 2.1"

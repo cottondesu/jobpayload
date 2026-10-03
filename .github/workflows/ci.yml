@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Ruby ${{ matrix.ruby }} / Active Job ${{ matrix.activejob }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.3", "3.4", "4.0"]
+        activejob: ["7.2", "8.0", "8.1"]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activejob_${{ matrix.activejob }}.gemfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+      - name: Show versions
+        run: bundle exec ruby -e 'puts "ruby #{RUBY_VERSION}, activejob #{Gem.loaded_specs.fetch("activejob").version}"'
+      - name: Test (randomized order)
+        run: bundle exec rake test
+      - name: Build gem
+        run: bundle exec rake build
+      - name: Whitespace check
+        run: |
+          git diff --check
+          git diff --check "$(git hash-object -t tree /dev/null)" HEAD
