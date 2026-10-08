@@ -166,11 +166,15 @@ class CLITest < Minitest::Test
   # with non-UTF-8 bytes is an invalid string; under the C locale it is not.
   # Both must work: the file system gets the exact bytes, and only output is
   # scrubbed to valid UTF-8.
+  # These tests need a file system that stores such names (macOS APFS
+  # rejects them); they are skipped only when a probe of their own temporary
+  # directory shows it cannot.
   NON_UTF8_LOCALES = [{ "LANG" => "C.UTF-8", "LC_ALL" => "C.UTF-8" }, { "LANG" => "C", "LC_ALL" => "C" }].freeze
 
   def test_snapshot_json_with_an_output_path_that_is_not_utf8
     NON_UTF8_LOCALES.each do |locale|
       Dir.mktmpdir do |dir|
+        FilesystemCapability.skip_unless_non_utf8_names(self, :directory, dir)
         output = File.join(dir, "out\xFF".b)
         out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, "--format", "json",
           env: locale)
@@ -187,6 +191,7 @@ class CLITest < Minitest::Test
   def test_text_output_and_check_with_a_fixture_path_that_is_not_utf8
     NON_UTF8_LOCALES.each do |locale|
       Dir.mktmpdir do |dir|
+        FilesystemCapability.skip_unless_non_utf8_names(self, :directory, dir)
         output = File.join(dir, "out\xFF".b)
         out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, env: locale)
         assert_equal 0, code, "#{locale}: #{err}"
@@ -198,6 +203,24 @@ class CLITest < Minitest::Test
         assert_equal 0, code, "#{locale}: #{err}"
         assert_equal 30, JSON.parse(out.force_encoding(Encoding::UTF_8))["summary"]["fixtures"]
       end
+    end
+  end
+
+  # A valid UTF-8, non-ASCII path works on every file system.
+  def test_snapshot_and_check_with_a_utf8_path
+    Dir.mktmpdir do |dir|
+      name = "\u51FA\u529B-\u2713"
+      output = File.join(dir, name)
+      out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", v1_cases, "--output", output, "--format", "json")
+      assert_equal 0, code, err
+      assert_equal [name.b], Dir.children(dir).map(&:b)
+      paths = JSON.parse(out.force_encoding(Encoding::UTF_8))["fixtures"].map { |f| f["path"] }
+      assert_equal 30, paths.size
+      assert(paths.all? { |path| path.include?("#{name}/") })
+
+      out, err, code = run_cli("check", "--boot", v1_boot, "--fixtures", output)
+      assert_equal 0, code, err
+      assert_includes out.force_encoding(Encoding::UTF_8), "30 fixtures"
     end
   end
 

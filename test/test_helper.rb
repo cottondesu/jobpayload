@@ -9,6 +9,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "fileutils"
+require_relative "support/filesystem_capability"
 
 module JobPayloadTest
   ROOT = File.expand_path("..", __dir__)

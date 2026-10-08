@@ -117,6 +117,22 @@ class ExceptionClassifierTest < Minitest::Test
     assert_equal "ok \u00E9", Classifier.safe_message(RuntimeError.new("ok \u00E9"))
   end
 
+  def test_scrub_utf8_replaces_only_invalid_bytes_and_never_mutates_its_input
+    valid = "out-\u00E9\u2713/a.json"
+    assert_equal valid, JobPayload.scrub_utf8(valid)
+
+    [
+      "out\xFF/a.json".b,
+      "out\xFF/a.json".dup.force_encoding(Encoding::UTF_8),
+      "out\xFF/a.json".b.freeze
+    ].each do |raw|
+      before = [raw.b, raw.encoding]
+      scrubbed = JobPayload.scrub_utf8(raw)
+      assert_equal ["out\uFFFD/a.json", Encoding::UTF_8, true], [scrubbed, scrubbed.encoding, scrubbed.valid_encoding?]
+      assert_equal before, [raw.b, raw.encoding], "the raw path bytes and encoding are not mutated"
+    end
+  end
+
   def test_scrub_never_raises_for_encodings_without_a_converter
     scrubbed = JobPayload.scrub_utf8("a+b".dup.force_encoding(Encoding::UTF_7))
     assert_equal ["a+b", Encoding::UTF_8], [scrubbed, scrubbed.encoding]

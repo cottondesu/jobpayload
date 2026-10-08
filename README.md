@@ -578,6 +578,13 @@ v0.1.0 deliberately does **not**:
   [Exit codes](#exit-codes) and can corrupt `--format json` output.
 - **Semantic changes** that still deserialize successfully pass (see
   [Non-goals](#non-goals)).
+- **File names that are not valid UTF-8.** jobpayload passes the exact bytes
+  it is given for `--output`, `--fixtures`, `--cases` and `--boot` to the file
+  system, and only replaces invalid bytes with U+FFFD in text and JSON output.
+  Whether such a name can exist at all depends on the file system: most Linux
+  file systems accept any bytes, while macOS (APFS) rejects names that are
+  not valid UTF-8, so jobpayload cannot create them there. Ordinary UTF-8
+  paths work on every platform.
 - **Database errors during GlobalID lookup** (`ActiveRecord::StatementInvalid`,
   for example a column or table that the current schema no longer has) are
   reported as `AJP900` with exit 2, not as `AJP201`. The run still fails.
@@ -616,6 +623,28 @@ BUNDLE_GEMFILE=gemfiles/activejob_7.2.gemfile bundle exec rake test
 The test suite boots small Rails-free applications from `test/apps` (Active
 Job + Active Record on in-memory SQLite) in subprocesses: `v1` writes baseline
 fixtures, `v2_compatible` and `v2_breaking` model later versions of the same app.
+
+Tests that need file names which are not valid UTF-8 probe the file system
+of their own temporary directory and are skipped, with the reason, only when
+it rejects such names (as on macOS).
+
+CI runs:
+
+- **Linux matrix** (`.github/workflows/ci.yml`): the full suite for every
+  supported Ruby / Active Job combination above.
+- **macOS smoke test** (same workflow): the full suite on Ruby 3.4 / Active
+  Job 8.1.
+- **Rails edge** (`.github/workflows/rails-edge.yml`, on pull requests,
+  weekly and on demand): GlobalID classification regression tests
+  (`test/edge`) against Rails `main` (`gemfiles/rails_edge.gemfile`), as a
+  separate workflow and check. This is an early warning about upstream
+  changes, not a supported version; its result is independent of the matrix
+  above, and a failure is reported as a failure.
+
+```sh
+BUNDLE_GEMFILE=gemfiles/rails_edge.gemfile bundle install
+BUNDLE_GEMFILE=gemfiles/rails_edge.gemfile bundle exec rake test:rails_edge
+```
 
 ## License
 
