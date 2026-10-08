@@ -1,0 +1,111 @@
+name: Rails edge
+
+# Early warning against Rails main (not a supported version). A separate
+# workflow from CI (Linux matrix and macOS smoke test), so it reports its own
+# check: a failure here means Rails main changed something jobpayload depends
+# on (or Rails main itself is broken) and needs investigating; it is not a
+# failure of the supported matrix. It is never marked as passing when it fails.
+on:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1" # Mondays 03:17 UTC
+
+permissions:
+  contents: read
+
+# A newer push to the same pull request supersedes a running check.
+concurrency:
+  group: rails-edge-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  globalid:
+    name: Rails main / Ruby 3.4 / GlobalID regression
+    runs-on: ubuntu-latest
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/rails_edge.gemfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+      - name: Install Rails main
+        id: install
+        # No lockfile and no cache: always resolve the current Rails main.
+        run: bundle install --jobs 4
+      - name: Show Rails revision and resolved versions
+        id: versions
+        run: |
+          # Without pipefail, `| tee` would hide a failed check below.
+          set -o pipefail
+          mkdir -p tmp/rails-edge
+          bundle exec ruby -e '
+            require "bundler"
+            lines = ["ruby #{RUBY_VERSION}"]
+            revisions = %w[activejob activerecord activemodel activesupport].map do |name|
+              spec = Gem.loaded_specs.fetch(name)
+              abort "#{name} #{spec.version} is not from Git (#{spec.source.class})" unless spec.source.is_a?(Bundler::Source::Git)
+              lines << "#{name} #{spec.version} rails/rails@#{spec.source.revision}"
+              spec.source.revision
+            end
+            lines << "globalid #{Gem.loaded_specs.fetch("globalid").version}"
+            puts lines
+            abort "Rails components come from different revisions: #{revisions.uniq.inspect}" unless revisions.uniq.size == 1
+          ' | tee tmp/rails-edge/versions.txt
+          { echo '```'; cat tmp/rails-edge/versions.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Check the expected Rails edge API
+        id: api
+        run: |
+          bundle exec ruby -e '
+            require "active_job"
+            klass = ActiveJob::DeserializationError::RecordNotFound
+            abort "#{klass} is not an ActiveJob::DeserializationError" unless klass.superclass == ActiveJob::DeserializationError
+            puts "#{klass} < #{klass.superclass}"
+          '
+      - name: GlobalID regression tests
+        id: tests
+        run: |
+          set -o pipefail
+          bundle exec rake test:rails_edge TESTOPTS=--verbose 2>&1 | tee tmp/rails-edge/test.log
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rails-edge-diagnostics
+          path: |
+            tmp/rails-edge/
+            gemfiles/rails_edge.gemfile.lock
+          if-no-files-found: warn
+      - name: Explain the failure
+        # The job stays failed; this only records where it failed.
+        if: failure()
+        env:
+          INSTALL: ${{ steps.install.outcome }}
+          VERSIONS: ${{ steps.versions.outcome }}
+          API: ${{ steps.api.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          {
+            echo "### Rails edge check failed"
+            echo
+            echo "| Step | Outcome |"
+            echo "| --- | --- |"
+            echo "| Install Rails main | $INSTALL |"
+            echo "| Rails revision and versions | $VERSIONS |"
+            echo "| Rails edge API | $API |"
+            echo "| GlobalID regression tests | $TESTS |"
+            echo
+            echo "Where to look first:"
+            echo
+            echo "- Install: the step log tells which of these it is: Rails main itself"
+            echo "  (upstream), jobpayload's own gemspec constraints (for example"
+            echo "  activejob < 9 once Rails main moves to 9.0), the Ruby version Rails main"
+            echo "  requires, dependency resolution, or the network / infrastructure."
+            echo "- Revision or API: Rails main resolved from more than one revision or"
+            echo "  not from Git, or it no longer provides the API these tests expect."
+            echo "- Tests: Rails main now behaves differently for jobpayload's GlobalID"
+            echo "  classification; investigate before claiming support."
+            echo
+            echo "This workflow does not test the supported Ruby / Active Job matrix (see CI)."
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -94,13 +94,38 @@ class FixtureTest < Minitest::Test
   end
 
   def test_file_name_that_is_not_utf8_is_reported_as_valid_utf8
-    fixture = parse(VALID, file: "bad\xFFname-v1.json".b)
+    fixture = Dir.mktmpdir do |dir|
+      JobPayloadTest::FilesystemCapability.skip_unless_non_utf8_names(self, :file, dir)
+      path = File.join(dir.b, "bad\xFFname-v1.json".b)
+      File.binwrite(path, JSON.generate(VALID))
+      assert_equal ["bad\xFFname-v1.json".b], Dir.children(dir).map(&:b), "the file name keeps its original bytes"
+      JobPayload::Fixture.parse(path).tap { |parsed| assert_equal path, parsed.path.b, "the path keeps its original bytes" }
+    end
 
     assert_kind_of JobPayload::Fixture::Invalid, fixture
     assert_equal ["bad\uFFFDname-v1", Encoding::UTF_8], [fixture.name, fixture.name.encoding]
     assert fixture.reason.valid_encoding?
     json = JobPayload::Formatter::JSON.call(JobPayload::Checker.new.call([fixture]))
     assert_equal "bad\uFFFDname-v1", JSON.parse(json)["findings"].first["fixture"]
+  end
+
+  # Same name handling without creating the file, so it also runs where the
+  # file system rejects such names (the read fails either way).
+  def test_unreadable_path_that_is_not_utf8_is_reported_as_valid_utf8
+    Dir.mktmpdir do |dir|
+      path = File.join(dir.b, "bad\xFFname-v1.json".b)
+      fixture = JobPayload::Fixture.parse(path)
+
+      assert_kind_of JobPayload::Fixture::Invalid, fixture
+      assert_equal ["bad\uFFFDname-v1", Encoding::UTF_8], [fixture.name, fixture.name.encoding]
+      assert_match(/cannot read file/, fixture.reason)
+      assert fixture.reason.valid_encoding?
+      assert_equal path, fixture.path.b, "the path keeps its original bytes"
+      json = JobPayload::Formatter::JSON.call(JobPayload::Checker.new.call([fixture]))
+      assert json.valid_encoding?
+      assert_equal "bad\uFFFDname-v1", JSON.parse(json)["findings"].first["fixture"]
+      assert_empty Dir.children(dir)
+    end
   end
 
   def test_missing_job

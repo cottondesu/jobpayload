@@ -19,6 +19,8 @@ jobs:
         activejob: ["7.2", "8.0", "8.1"]
     env:
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activejob_${{ matrix.activejob }}.gemfile
+      # Linux file systems store non-UTF-8 file names: those tests must run, not skip.
+      JOBPAYLOAD_REQUIRE_NON_UTF8_FILENAMES: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: ruby/setup-ruby@v1
@@ -30,6 +32,32 @@ jobs:
           bundle exec ruby -e 'puts "ruby #{RUBY_VERSION}, activejob #{Gem.loaded_specs.fetch("activejob").version}"'
       - name: Test (randomized order)
         run: bundle exec rake test
+      - name: Build gem
+        run: bundle exec rake build
+      - name: Whitespace check
+        run: |
+          git diff --check
+          git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+
+  # One macOS combination, as a smoke test of file system portability (APFS
+  # rejects file names that are not valid UTF-8; the tests that need such
+  # names skip only when a probe of their temporary directory says so).
+  macos:
+    name: macOS / Ruby 3.4 / Active Job 8.1
+    runs-on: macos-latest
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activejob_8.1.gemfile
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          bundler-cache: true
+      - name: Show versions
+        run: |
+          bundle exec ruby -e 'puts "ruby #{RUBY_VERSION} (#{RUBY_PLATFORM}), activejob #{Gem.loaded_specs.fetch("activejob").version}"'
+      - name: Test (randomized order)
+        run: bundle exec rake test TESTOPTS=--verbose
       - name: Build gem
         run: bundle exec rake build
       - name: Whitespace check

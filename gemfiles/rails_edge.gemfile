@@ -1,0 +1,17 @@
+# frozen_string_literal: true
+
+# Rails main, for the Rails edge workflow only (.github/workflows/rails-edge.yml:
+# pull requests, weekly schedule, manual runs); not part of the supported
+# matrix. Every Rails component comes from the same Git revision.
+source "https://rubygems.org"
+
+gemspec path: ".."
+
+git "https://github.com/rails/rails.git", branch: "main" do
+  gem "activejob"
+  gem "activerecord"
+  gem "activemodel"
+  gem "activesupport"
+end
+
+eval_gemfile "common.gemfile"

@@ -53,7 +53,10 @@ ActiveJob::Base.queue_adapter = ForbiddenQueueAdapter.new
 
 if ENV["JOBPAYLOAD_TEST_NO_DB"]
   # Simulates a broken test environment: no database connection can be made.
-  ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: "/dev/null/jobpayload/db.sqlite3")
+  # An existing directory is not a valid SQLite database file, so opening it
+  # fails without the adapter trying to create a missing parent directory
+  # (which depends on FileUtils having been loaded by something else).
+  ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: __dir__)
 else
   ActiveRecord::Base.establish_connection(adapter: "sqlite3", database: ":memory:")
   ActiveRecord::Migration.verbose = false
