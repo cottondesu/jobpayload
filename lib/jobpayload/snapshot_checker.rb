@@ -65,7 +65,7 @@ module JobPayload
     # +current_job+ is already normalized (Snapshotter#build_document).
     def compare(name, current_job)
       path = File.join(@fixtures_dir, "#{name}.json")
-      begin
+      stat = begin
         File.lstat(path)
       rescue Errno::ENOENT
         return Entry.new(name, path, :missing, nil)
@@ -73,8 +73,9 @@ module JobPayload
         # For example an unsearchable fixture directory: not "never generated".
         return invalid(name, path, "cannot access file: #{e.message}")
       end
-      # Also catches dangling or looping symlinks.
-      return invalid(name, path, "not a regular file") unless File.file?(path)
+      # From lstat, so a symlink is never followed, whatever it points to.
+      return invalid(name, path, "symbolic link (not followed)") if stat.symlink?
+      return invalid(name, path, "not a regular file") unless stat.file?
 
       fixture = begin
         Fixture.parse(path)

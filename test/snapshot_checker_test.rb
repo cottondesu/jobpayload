@@ -237,20 +237,94 @@ class SnapshotCheckerTest < Minitest::Test
     end
   end
 
-  def test_symlinks
+  # Names, types, bytes, link targets and modification times of everything
+  # under +dir+, without following symlinks or opening anything but regular
+  # files (a FIFO would block).
+  def lstat_tree(dir)
+    Dir.glob("**/*", File::FNM_DOTMATCH, base: dir).reject { |e| File.basename(e) == "." }.sort.to_h do |entry|
+      full = File.join(dir, entry)
+      stat = File.lstat(full)
+      content = if stat.file? then File.binread(full)
+                elsif stat.symlink? then File.readlink(full)
+                end
+      [entry, [stat.ftype, content, stat.mtime]]
+    end
+  end
+
+  # Records every path Fixture.parse is asked to read.
+  def parsed_paths
+    parsed = []
+    original = JobPayload::Fixture.method(:parse)
+    JobPayload::Fixture.define_singleton_method(:parse) { |p| parsed << p && original.call(p) }
+    yield
+    parsed
+  ensure
+    JobPayload::Fixture.define_singleton_method(:parse, original)
+  end
+
+  # A baseline must be a regular file. Symlinks are invalid whatever they
+  # point to and are never followed; only a name with no directory entry is
+  # missing.
+  def test_symlinks_and_special_files_are_invalid_and_never_read
+    cases = CASES.merge("gone-v1" => CASES["plot-v1"])
+    {
+      "symlink to a valid fixture" => [lambda { |dir, _ext|
+        File.rename(path(dir, "plot-v1"), File.join(dir, "elsewhere.json"))
+        File.symlink("elsewhere.json", path(dir, "plot-v1"))
+      }, "symbolic link (not followed)"],
+      "symlink to a valid fixture outside the directory" => [lambda { |dir, ext|
+        File.rename(path(dir, "plot-v1"), File.join(ext, "plot-v1.json"))
+        File.symlink(File.join(ext, "plot-v1.json"), path(dir, "plot-v1"))
+      }, "symbolic link (not followed)"],
+      "dangling symlink" => [lambda { |dir, _ext|
+        File.delete(path(dir, "plot-v1"))
+        File.symlink(File.join(dir, "nowhere.json"), path(dir, "plot-v1"))
+      }, "symbolic link (not followed)"],
+      "self-referential symlink" => [lambda { |dir, _ext|
+        File.delete(path(dir, "plot-v1"))
+        File.symlink(path(dir, "plot-v1"), path(dir, "plot-v1"))
+      }, "symbolic link (not followed)"],
+      "symlink loop" => [lambda { |dir, _ext|
+        File.delete(path(dir, "plot-v1"))
+        File.symlink(path(dir, "plot-v1"), File.join(dir, "other.json"))
+        File.symlink(File.join(dir, "other.json"), path(dir, "plot-v1"))
+      }, "symbolic link (not followed)"],
+      "directory" => [lambda { |dir, _ext|
+        File.delete(path(dir, "plot-v1"))
+        Dir.mkdir(path(dir, "plot-v1"))
+      }, "not a regular file"],
+      "FIFO" => [lambda { |dir, _ext|
+        File.delete(path(dir, "plot-v1"))
+        File.mkfifo(path(dir, "plot-v1"))
+      }, "not a regular file"]
+    }.each do |label, (replace, reason)|
+      Dir.mktmpdir do |ext|
+        Dir.mktmpdir do |dir|
+          snapshot(dir, cases)
+          File.delete(path(dir, "gone-v1"))
+          edit(dir, "stamped-v1") { |doc| doc["job"]["stamp"] = "edited" }
+          replace.call(dir, ext)
+          before = [lstat_tree(dir), lstat_tree(ext), File.lstat(dir).mtime]
+
+          entries = nil
+          parsed = parsed_paths { entries = check(dir, cases) }
+          assert_equal({ "gone-v1" => :missing, "plot-v1" => :invalid, "stamped-v1" => :different }, statuses(entries), label)
+          assert_equal reason, entries.find { |e| e.name == "plot-v1" }.reason, label
+          assert_equal [path(dir, "stamped-v1")], parsed, "#{label}: only regular files are read"
+          assert_equal 2, JobPayload::SnapshotChecker.exit_code(entries), label
+          assert_equal before, [lstat_tree(dir), lstat_tree(ext), File.lstat(dir).mtime], "#{label}: nothing changes"
+        end
+      end
+    end
+  end
+
+  def test_regular_files_are_still_compared
     Dir.mktmpdir do |dir|
       snapshot(dir)
-      File.rename(path(dir, "plot-v1"), File.join(dir, "elsewhere.json"))
-      File.symlink(File.join(dir, "elsewhere.json"), path(dir, "plot-v1"))
-      File.delete(path(dir, "stamped-v1"))
-      File.symlink(File.join(dir, "gone.json"), path(dir, "stamped-v1"))
-      entries = check(dir)
-      assert_equal({ "plot-v1" => :identical, "stamped-v1" => :invalid }, statuses(entries))
-      assert_equal "not a regular file", entries.last.reason
-
-      File.delete(path(dir, "stamped-v1"))
-      File.symlink(path(dir, "stamped-v1"), path(dir, "stamped-v1"))
-      assert_equal "not a regular file", check(dir).last.reason
+      entries = nil
+      parsed = parsed_paths { entries = check(dir) }
+      assert_equal({ "plot-v1" => :identical, "stamped-v1" => :identical }, statuses(entries))
+      assert_equal [path(dir, "plot-v1"), path(dir, "stamped-v1")], parsed
     end
   end
 

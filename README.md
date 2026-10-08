@@ -243,13 +243,14 @@ payloads.
 | `identical` | The stored `job` matches what the current code serializes | 0 |
 | `different` | The payload the current code writes differs from the stored `job` | 1 |
 | `missing` | No fixture file for the case | 1 |
-| `invalid` | The fixture cannot be used: invalid JSON or UTF-8, wrong schema, name mismatch, not a regular file (including broken symlinks), unreadable or inaccessible (for example an unsearchable directory), or a `job` that `snapshot` could never have written (a non-finite number such as `1e400`, or nesting deeper than `snapshot`'s limit of 100) | 2 |
+| `invalid` | The fixture cannot be used: invalid JSON or UTF-8, wrong schema, name mismatch, a symbolic link (never followed, even when it points to a valid fixture), not a regular file (such as a directory or FIFO), unreadable or inaccessible (for example an unsearchable directory), or a `job` that `snapshot` could never have written (a non-finite number such as `1e400`, or nesting deeper than `snapshot`'s limit of 100) | 2 |
 
 The exit status is the highest that applies (`2` > `1` > `0`). Case errors,
 boot errors and usage errors exit 2 as for `snapshot`. Fixtures with no
 matching case are ignored. A `--output` directory that does not exist is not an
 error: every case is reported `missing` (exit 1), so check the path if
-everything is missing.
+everything is missing. Only the fixture file entry itself must not be a symbolic
+link; `--output` may be one.
 
 Text output has one line per case, in name order, and a summary. The status
 says whether a fixture differs, not where; compare the files (for example
