@@ -150,6 +150,7 @@ bundle exec jobpayload snapshot [options]
 | `--boot PATH` | `config/environment.rb` | File required to boot the app |
 | `--environment NAME` | `test` | Value assigned to `RAILS_ENV` before booting |
 | `--update` | off | Replace existing fixtures whose content changed |
+| `--check` | off | Compare with existing fixtures without writing (see [Detecting snapshot drift](#detecting-snapshot-drift-snapshot---check)) |
 | `--format text\|json` | `text` | Output format |
 
 Behaviour:
@@ -212,6 +213,91 @@ One JSON file per fixture, schema v1:
 - Output is byte-for-byte deterministic: object keys sorted recursively, a fixed
   two-space layout (independent of the json gem version), UTF-8, LF line endings,
   a final newline, written atomically (temp file + rename).
+
+### Detecting snapshot drift (`snapshot --check`)
+
+```sh
+bundle exec jobpayload snapshot --check [options]
+```
+
+`--check` serializes every snapshot case with the current code, exactly as
+`snapshot` would, and compares the result with the fixture already stored in
+`--output`. It answers "did the payload this code writes change?", so an
+unintended change to what new code enqueues fails CI before it ships. It is
+**read-only for the fixtures**: nothing in `--output` is written, replaced,
+created or deleted, not even a missing `--output` directory. (Like `snapshot`,
+it still boots your application and runs your cases file, which may write to
+the test database.) `--check` and `--update` cannot be combined.
+
+Only the `job` object is compared, and every key in it counts. The current
+payload is normalized exactly as `snapshot` writes it (fixed `job_id`,
+`enqueued_at` and so on); the stored `job` is compared as stored, so any edit
+to a fixture's `job`, volatile metadata included, is reported as `different`.
+`source` metadata, key order, whitespace and equivalent JSON spellings
+(`"\u00e9"` and `"é"`, `1.0e2` and `100.0`) are ignored. Value types and array
+order are kept: `1` and `1.0`, or `null` and a missing key, are different
+payloads.
+
+| Status | Meaning | Exit |
+| --- | --- | --- |
+| `identical` | The stored `job` matches what the current code serializes | 0 |
+| `different` | The payload the current code writes differs from the stored `job` | 1 |
+| `missing` | No fixture file for the case | 1 |
+| `invalid` | The fixture cannot be used: invalid JSON or UTF-8, wrong schema, name mismatch, a symbolic link (never followed, even when it points to a valid fixture), not a regular file (such as a directory or FIFO), unreadable or inaccessible (for example an unsearchable directory), or a `job` that `snapshot` could never have written (a non-finite number such as `1e400`, or nesting deeper than `snapshot`'s limit of 100) | 2 |
+
+The exit status is the highest that applies (`2` > `1` > `0`). Case errors,
+boot errors and usage errors exit 2 as for `snapshot`. Fixtures with no
+matching case are ignored. A `--output` directory that does not exist is not an
+error: every case is reported `missing` (exit 1), so check the path if
+everything is missing. Only the fixture file entry itself must not be a symbolic
+link; `--output` may be one.
+
+Text output has one line per case, in name order, and a summary. The status
+says whether a fixture differs, not where; compare the files (for example
+with `git diff` after `snapshot --update`) to see the change:
+
+```text
+identical billing-legacy-money-v1  test/jobpayload_fixtures/billing-legacy-money-v1.json
+different billing-money-v1  test/jobpayload_fixtures/billing-money-v1.json
+missing   scheduled-v1  test/jobpayload_fixtures/scheduled-v1.json
+
+3 fixtures: 1 identical, 1 different, 1 missing, 0 invalid
+```
+
+With `--format json` the document (schema v1) is:
+
+```json
+{
+  "schema_version": 1,
+  "tool_version": "0.1.0",
+  "mode": "check",
+  "status": "fail",
+  "summary": {
+    "fixtures": 1,
+    "identical": 0,
+    "different": 1,
+    "missing": 0,
+    "invalid": 0
+  },
+  "fixtures": [
+    {
+      "name": "billing-money-v1",
+      "path": "test/jobpayload_fixtures/billing-money-v1.json",
+      "status": "different",
+      "reason": null
+    }
+  ]
+}
+```
+
+`status` is `pass`, `fail` or `tool_error` for exit 0, 1 and 2. `reason` is
+set only for `invalid`.
+Text and JSON output are deterministic for the same input.
+
+A `different` result is not a compatibility failure by itself: it means the
+new code writes a different payload than the fixture records. Add a new case
+for the new format (keeping the old fixture for `check`), or re-run
+`snapshot --update` if the fixture was meant to follow the code.
 
 ## Checking old fixtures on new code
 
@@ -331,6 +417,10 @@ Finding codes are a stable API for 0.1.x.
 
 When several apply, the highest priority wins: `2` > `1` > `0`.
 
+These are the exit statuses of `check`. `snapshot --check` uses the same
+`2` > `1` > `0` precedence with its own meanings; see
+[Detecting snapshot drift](#detecting-snapshot-drift-snapshot---check).
+
 Results are written to **stdout**. Usage, configuration and boot errors are
 written to **stderr** (and nothing is written to stdout in that case).
 jobpayload itself writes nothing else to stdout. While booting and
@@ -400,6 +490,9 @@ findings in code / argument-path order, so the output is deterministic.
 A summary line `N tool error(s)` is added when fixtures had fatal findings.
 
 ## JSON output
+
+This section describes `check --format json`. The `snapshot --check` document
+is described in [Detecting snapshot drift](#detecting-snapshot-drift-snapshot---check).
 
 ```sh
 bundle exec jobpayload check --format json
@@ -514,6 +607,8 @@ jobs:
           bundler-cache: true
       - run: bin/rails db:prepare
       - run: bundle exec jobpayload check
+      # Optional: fail when the code changes the payloads it writes.
+      - run: bundle exec jobpayload snapshot --check
 ```
 
 For two-way checking, check out both the base and the head revision (for
@@ -567,6 +662,8 @@ v0.1.0 deliberately does **not**:
   never writes more than 100). Such a fixture is reported as `AJP900` with a
   `SystemStackError` cause, or the check stops with an internal error; either
   way the exit status is 2, never 0 or 1.
+  `snapshot --check` reports a baseline nested deeper than 100 levels as
+  `invalid` (exit 2).
 - **GlobalIDs inside custom serializer payloads.** Only a top-level or
   plain-array/hash GlobalID argument can be inconclusive. If a custom
   serializer's own payload contains a GlobalID whose record is missing, the

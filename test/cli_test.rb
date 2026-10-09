@@ -224,6 +224,147 @@ class CLITest < Minitest::Test
     end
   end
 
+  # A writable copy of the shared v1 baseline.
+  def copy_of_v1_fixtures(dir)
+    copy = File.join(dir, "fixtures")
+    FileUtils.cp_r(v1_fixtures, copy)
+    copy
+  end
+
+  def snapshot_check(fixtures, *extra, env: {})
+    run_cli("snapshot", "--check", "--boot", v1_boot, "--cases", v1_cases, "--output", fixtures, *extra, env: env)
+  end
+
+  def file_states(dir)
+    Dir.children(dir).sort.to_h { |name| [name, [File.binread(File.join(dir, name)), File.mtime(File.join(dir, name))]] }
+  end
+
+  def test_snapshot_check_on_an_unchanged_baseline
+    Dir.mktmpdir do |dir|
+      fixtures = copy_of_v1_fixtures(dir)
+      before = file_states(fixtures)
+
+      out, err, code = snapshot_check(fixtures)
+      assert_equal [0, ""], [code, err]
+      assert_includes out, "identical billing-money-v1  #{fixtures}/billing-money-v1.json"
+      assert_match(/\n\n30 fixtures: 30 identical, 0 different, 0 missing, 0 invalid\n\z/, out)
+
+      out, err, code = snapshot_check(fixtures, "--format", "json")
+      assert_equal [0, ""], [code, err]
+      document = JSON.parse(out)
+      assert_equal [1, "check", "pass"], document.values_at("schema_version", "mode", "status")
+      assert_equal({ "fixtures" => 30, "identical" => 30, "different" => 0, "missing" => 0, "invalid" => 0 }, document["summary"])
+      assert_equal({ "name" => "account-sync-v1", "path" => "#{fixtures}/account-sync-v1.json", "status" => "identical",
+                     "reason" => nil }, document["fixtures"].first)
+      assert_equal before, file_states(fixtures), "--check never writes"
+    end
+  end
+
+  def test_snapshot_check_reports_drift_with_exit_codes
+    Dir.mktmpdir do |dir|
+      fixtures = copy_of_v1_fixtures(dir)
+      billing = File.join(fixtures, "billing-money-v1.json")
+      File.binwrite(billing, File.binread(billing).sub('"amount": 1250', '"amount": 1'))
+      # Only source metadata and layout change: still identical.
+      tenant = File.join(fixtures, "tenant-v1.json")
+      document = JSON.parse(File.read(tenant))
+      document["source"]["ruby_version"] = "0.0.0"
+      File.write(tenant, JSON.generate(document))
+      File.delete(File.join(fixtures, "scheduled-v1.json"))
+      # Volatile metadata stored in a baseline is compared as stored.
+      array = File.join(fixtures, "builtin-array-v1.json")
+      document = JSON.parse(File.read(array))
+      document["job"]["job_id"] = "6b3c0f4e-0000-4000-8000-000000000000"
+      File.write(array, JSON.generate(document))
+      before = file_states(fixtures)
+
+      out, err, code = snapshot_check(fixtures)
+      assert_equal [1, ""], [code, err]
+      assert_includes out, "different billing-money-v1  #{billing}\n"
+      assert_includes out, "different builtin-array-v1  #{array}\n"
+      assert_includes out, "missing   scheduled-v1  #{fixtures}/scheduled-v1.json\n"
+      assert_includes out, "identical tenant-v1  #{tenant}\n"
+      assert_equal 32, out.lines.size, "one line per fixture, a blank line and the summary"
+      assert_match(/^30 fixtures: 27 identical, 2 different, 1 missing, 0 invalid$/, out)
+
+      json, err, code = snapshot_check(fixtures, "--format", "json")
+      assert_equal [1, ""], [code, err]
+      assert_equal "fail", JSON.parse(json)["status"]
+      assert_equal({ "name" => "billing-money-v1", "path" => billing, "status" => "different", "reason" => nil },
+        JSON.parse(json)["fixtures"].find { |f| f["name"] == "billing-money-v1" })
+      assert_equal [json, code], snapshot_check(fixtures, "--format", "json").values_at(0, 2), "byte-for-byte deterministic"
+      assert_equal before, file_states(fixtures), "--check never writes"
+
+      File.write(File.join(fixtures, "exploding-v1.json"), "{")
+      before = file_states(fixtures)
+      out, err, code = snapshot_check(fixtures)
+      assert_equal [2, ""], [code, err], "an invalid baseline outranks drift"
+      assert_includes out, "invalid   exploding-v1  #{fixtures}/exploding-v1.json  (invalid JSON:"
+      assert_match(/^30 fixtures: 26 identical, 2 different, 1 missing, 1 invalid$/, out)
+      assert_equal "tool_error", JSON.parse(snapshot_check(fixtures, "--format", "json").first)["status"]
+      assert_equal before, file_states(fixtures), "--check never writes"
+    end
+  end
+
+  def test_snapshot_check_usage_and_configuration_errors
+    Dir.mktmpdir do |dir|
+      log = File.join(dir, "boot.log")
+      out, err, code = snapshot_check(dir, "--update", env: { "JOBPAYLOAD_BOOT_LOG" => log })
+      assert_equal ["", 2], [out, code]
+      assert_includes err, "jobpayload: error: --check and --update cannot be used together"
+      refute File.exist?(log), "rejected before booting the application"
+
+      file = File.join(dir, "not-a-dir")
+      File.write(file, "x")
+      out, err, code = snapshot_check(file)
+      assert_equal ["", 2], [out, code]
+      assert_includes err, "output path is not a directory"
+
+      missing = File.join(dir, "no-such-dir")
+      out, err, code = snapshot_check(missing)
+      assert_equal [1, ""], [code, err]
+      assert_match(/^30 fixtures: 0 identical, 0 different, 30 missing, 0 invalid$/, out)
+      refute File.exist?(missing), "--check never creates the fixture directory"
+
+      cases = File.join(dir, "cases.rb")
+      File.write(cases, "JobPayload.define { fixture('boom-v1') { raise 'boom' } }\n")
+      out, err, code = run_cli("snapshot", "--check", "--boot", v1_boot, "--cases", cases, "--output", dir)
+      assert_equal ["", 2], [out, code]
+      assert_includes err, 'fixture "boom-v1"'
+
+      out, _err, code = run_cli("snapshot", "--help")
+      assert_equal 0, code
+      assert_includes out, "--check"
+    end
+  end
+
+  def test_snapshot_check_boots_once_and_evaluates_each_case_once
+    Dir.mktmpdir do |dir|
+      cases = File.join(dir, "cases.rb")
+      File.write(cases, <<~RUBY)
+        JobPayload.define do
+          fixture("counted-a-v1") { File.write(ENV.fetch("EVAL_LOG"), "a\n", mode: "a"); ExplodingJob.new("a") }
+          fixture("counted-b-v1") { File.write(ENV.fetch("EVAL_LOG"), "b\n", mode: "a"); ExplodingJob.new("b") }
+        end
+      RUBY
+      fixtures = File.join(dir, "fixtures")
+      boot_log = File.join(dir, "boot.log")
+      eval_log = File.join(dir, "eval.log")
+      marker = File.join(dir, "performed")
+      env = { "JOBPAYLOAD_BOOT_LOG" => boot_log, "EVAL_LOG" => eval_log, "JOBPAYLOAD_PERFORM_MARKER" => marker }
+      _out, err, code = run_cli("snapshot", "--boot", v1_boot, "--cases", cases, "--output", fixtures, env: env)
+      assert_equal [0, ""], [code, err]
+      [boot_log, eval_log].each { |log| File.delete(log) }
+
+      out, err, code = run_cli("snapshot", "--check", "--boot", v1_boot, "--cases", cases, "--output", fixtures, env: env)
+      assert_equal [0, ""], [code, err]
+      assert_match(/^2 fixtures: 2 identical, 0 different, 0 missing, 0 invalid$/, out)
+      assert_equal 1, File.readlines(boot_log).size, "booted once"
+      assert_equal %W[a\n b\n], File.readlines(eval_log), "each case evaluated once"
+      refute File.exist?(marker), "no job is performed"
+    end
+  end
+
   def test_snapshot_case_errors_are_tool_errors
     Dir.mktmpdir do |dir|
       cases = File.join(dir, "cases.rb")

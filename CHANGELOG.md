@@ -2,6 +2,27 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+Changes on `main` that are not part of any released version yet.
+
+### Added
+
+- `jobpayload snapshot --check`: compares what the current code serializes for
+  each snapshot case with the stored fixture, without writing anything.
+  Statuses `identical`, `different` and `missing` (exit 1) and `invalid`
+  (exit 2); the highest exit status wins. The whole `job` object is compared:
+  the current payload normalized as `snapshot` writes it, the stored one as
+  stored. `source` metadata, key order and whitespace are ignored. Cannot be
+  combined with `--update`. Text and JSON (schema v1, `"mode": "check"`)
+  output.
+
+### Changed
+
+- Tests and CI: macOS smoke test, capability-based skips for file names that
+  are not valid UTF-8, and a separate Rails `main` GlobalID regression
+  workflow. No change to runtime behaviour.
+
 ## 0.1.0
 
 Initial release. The single question v0.1.0 answers is: *can the current

@@ -98,9 +98,12 @@ module JobPayload
         opts.on("--output DIR", "Fixture output directory (default: #{DEFAULT_FIXTURES})") { |v| options[:output] = v }
         boot_options(opts, options)
         opts.on("--update", "Replace existing fixtures whose content changed") { options[:update] = true }
+        opts.on("--check", "Compare with existing fixtures without writing (exit 1 on drift)") { options[:check] = true }
         format_option(opts, options)
       end
       return EXIT_SUCCESS if parse(parser)
+
+      raise UsageError, "--check and --update cannot be used together" if options[:check] && options[:update]
 
       formatter_name = options[:format]
       raise ConfigurationError, "cases file not found: #{options[:cases]}" unless File.file?(options[:cases])
@@ -110,9 +113,18 @@ module JobPayload
 
       boot(options)
       registry = CaseRegistry.load(options[:cases])
+      return snapshot_check(registry, options[:output], formatter_name) if options[:check]
+
       entries = Snapshotter.new(registry: registry, output_dir: options[:output], update: options[:update]).call
       @stdout.print(formatter_name == "json" ? snapshot_json(entries) : snapshot_text(entries))
       EXIT_SUCCESS
+    end
+
+    # `snapshot --check`: read-only drift detection against existing fixtures.
+    def snapshot_check(registry, fixtures_dir, formatter_name)
+      entries = SnapshotChecker.new(registry: registry, fixtures_dir: fixtures_dir).call
+      @stdout.print(formatter_name == "json" ? snapshot_check_json(entries) : snapshot_check_text(entries))
+      SnapshotChecker.exit_code(entries)
     end
 
     def check
@@ -196,6 +208,34 @@ module JobPayload
         "tool_version" => VERSION,
         "summary" => %i[created updated identical skipped].to_h { |status| [status.to_s, counts.fetch(status, 0)] },
         "fixtures" => entries.map { |e| { "name" => e.name, "path" => JobPayload.scrub_utf8(e.path), "status" => e.status.to_s } }
+      }
+      Canonical.pretty(document)
+    end
+
+    def snapshot_check_text(entries)
+      lines = entries.map do |entry|
+        line = format("%-9s %s  %s", entry.status, entry.name, JobPayload.scrub_utf8(entry.path))
+        entry.reason ? "#{line}  (#{JobPayload.scrub_utf8(entry.reason)})" : line
+      end
+      counts = entries.map(&:status).tally
+      summary = SnapshotChecker::STATUSES.map { |status| "#{counts.fetch(status, 0)} #{status}" }.join(", ")
+      "#{lines.join("\n")}\n\n#{entries.size} fixtures: #{summary}\n"
+    end
+
+    def snapshot_check_json(entries)
+      counts = entries.map(&:status).tally
+      document = {
+        "schema_version" => 1,
+        "tool_version" => VERSION,
+        "mode" => "check",
+        "status" => SnapshotChecker.status(entries),
+        "summary" => { "fixtures" => entries.size }.merge(SnapshotChecker::STATUSES.to_h { |s| [s.to_s, counts.fetch(s, 0)] }),
+        "fixtures" => entries.map do |e|
+          {
+            "name" => e.name, "path" => JobPayload.scrub_utf8(e.path), "status" => e.status.to_s,
+            "reason" => e.reason && JobPayload.scrub_utf8(e.reason)
+          }
+        end
       }
       Canonical.pretty(document)
     end
