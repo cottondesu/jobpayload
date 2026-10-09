@@ -12,7 +12,7 @@ class CLITest < Minitest::Test
 
   def test_version
     out, err, code = run_cli("--version")
-    assert_equal ["jobpayload v0.1.0\n", "", 0], [out, err, code]
+    assert_equal ["jobpayload v0.2.0\n", "", 0], [out, err, code]
   end
 
   def test_help_goes_to_stdout
@@ -28,7 +28,7 @@ class CLITest < Minitest::Test
 
   def test_subcommand_version_and_abbreviations
     out, err, code = run_cli("check", "--version")
-    assert_equal ["jobpayload v0.1.0\n", "", 0], [out, err, code]
+    assert_equal ["jobpayload v0.2.0\n", "", 0], [out, err, code]
 
     out, err, code = run_cli("check", "--fail", "--fixtures", "/nonexistent")
     assert_equal ["", 2], [out, code]

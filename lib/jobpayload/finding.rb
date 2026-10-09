@@ -3,7 +3,7 @@
 module JobPayload
   # One problem found while checking a fixture.
   #
-  # Finding codes are a stable API: their meaning does not change within 0.1.x.
+  # Finding codes are a stable API: 0.2.0 keeps every 0.1.0 code and meaning.
   Finding = Struct.new(
     :code,
     :fixture,

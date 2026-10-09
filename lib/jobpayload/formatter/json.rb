@@ -5,7 +5,7 @@ require "json"
 module JobPayload
   module Formatter
     # Machine-readable output, schema v1. Field names and meanings are stable
-    # for 0.1.x; see README "JSON output".
+    # within schema_version 1; see README "JSON output".
     module JSON
       SCHEMA_VERSION = 1
 
