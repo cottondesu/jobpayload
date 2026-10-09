@@ -338,6 +338,108 @@ class CLITest < Minitest::Test
     end
   end
 
+  RACE_HOOK = File.expand_path("support/race_after_lstat.rb", __dir__)
+  SENTINEL = "JOBPAYLOAD_SECRET_SENTINEL_NOT_FOR_OUTPUT"
+
+  # Like run_cli, but a run that does not finish within +seconds+ is killed
+  # (with its process group) and fails the test instead of hanging the suite.
+  def run_cli_with_deadline(*args, env: {}, seconds: 120)
+    Open3.popen3(env, RbConfig.ruby, "-I", File.join(ROOT, "lib"), EXE, *args, chdir: ROOT, pgroup: true) do |stdin, out, err, wait|
+      stdin.close
+      readers = [out, err].map { |io| Thread.new { io.read } }
+      unless wait.join(seconds)
+        Process.kill("KILL", -wait.pid)
+        wait.join
+        flunk "jobpayload #{args.first(2).join(" ")} did not finish within #{seconds}s"
+      end
+      [*readers.map(&:value), wait.value.exitstatus]
+    end
+  end
+
+  # A real process, with the fixture entry replaced between lstat and open
+  # (test/support/race_after_lstat.rb).
+  def test_snapshot_check_entry_replaced_after_lstat_in_a_real_process
+    {
+      "symlink" => "replaced by a symbolic link after it was checked (not followed)",
+      "fifo" => "replaced by something that is not a regular file after it was checked",
+      "replace" => "replaced by a different file after it was checked",
+      "remove" => "file disappeared after it was checked"
+    }.each do |mode, reason|
+      Dir.mktmpdir do |dir|
+        fixtures = copy_of_v1_fixtures(dir)
+        tenant = File.join(fixtures, "tenant-v1.json")
+        target =
+          case mode
+          when "symlink" then File.join(dir, "secret.txt").tap { |f| File.write(f, "#{SENTINEL}\n") }
+          when "replace" then File.join(fixtures, "tenant-v1.json.new").tap { |f| FileUtils.cp(tenant, f) }
+          else ""
+          end
+        env = { "JOBPAYLOAD_TEST_RACE_HOOK" => RACE_HOOK, "JOBPAYLOAD_TEST_RACE" => mode,
+                "JOBPAYLOAD_TEST_RACE_FIXTURE" => "tenant-v1.json", "JOBPAYLOAD_TEST_RACE_TARGET" => target }
+
+        out, err, code = run_cli_with_deadline("snapshot", "--check", "--boot", v1_boot, "--cases", v1_cases,
+          "--output", fixtures, env: env)
+        assert_equal [2, ""], [code, err], mode
+        assert_includes out, "invalid   tenant-v1  #{tenant}  (#{reason})\n", mode
+        assert_match(/^30 fixtures: 29 identical, 0 different, 0 missing, 1 invalid$/, out, mode)
+        refute_includes out, SENTINEL, mode
+
+        # The entry is replaced again on this second run (except after
+        # "replace", whose source is gone): JSON output carries no secret either.
+        next if mode == "replace"
+
+        FileUtils.rm_f(tenant) # the symlink or FIFO itself, never its target
+        FileUtils.cp(v1_fixture("tenant-v1"), tenant)
+        json, err, code = run_cli_with_deadline("snapshot", "--check", "--boot", v1_boot, "--cases", v1_cases,
+          "--output", fixtures, "--format", "json", env: env)
+        assert_equal [2, ""], [code, err], mode
+        assert_equal({ "status" => "invalid", "reason" => reason },
+          JSON.parse(json)["fixtures"].find { |f| f["name"] == "tenant-v1" }.slice("status", "reason"), mode)
+        refute_includes json, SENTINEL, mode
+      end
+    end
+  end
+
+  def test_snapshot_check_through_a_symlinked_output_directory
+    Dir.mktmpdir do |dir|
+      fixtures = copy_of_v1_fixtures(dir)
+      link = File.join(dir, "linked")
+      File.symlink(fixtures, link)
+      out, err, code = snapshot_check(link)
+      assert_equal [0, ""], [code, err]
+      assert_match(/^30 fixtures: 30 identical, 0 different, 0 missing, 0 invalid$/, out)
+    end
+  end
+
+  # `check` keeps reading symlinked fixtures (only `snapshot --check` refuses
+  # them).
+  def test_check_still_reads_symlinked_fixtures
+    Dir.mktmpdir do |dir|
+      outside = File.join(dir, "outside")
+      Dir.mkdir(outside)
+      fixtures = File.join(dir, "fixtures")
+      Dir.mkdir(fixtures)
+      %w[tenant-v1 legacy-billing-v1].each do |name|
+        FileUtils.cp(v1_fixture(name), outside)
+        File.symlink(File.join(outside, "#{name}.json"), File.join(fixtures, "#{name}.json"))
+      end
+      FileUtils.cp(v1_fixture("billing-money-v1"), fixtures)
+
+      out, err, code = run_cli("check", "--boot", v1_boot, "--fixtures", fixtures)
+      assert_equal [0, ""], [code, err]
+      assert_equal "PASS billing-money-v1\nPASS legacy-billing-v1\nPASS tenant-v1\n", out.lines.first(3).join
+
+      out, err, code = run_cli("check", "--boot", v1_boot, "--fixtures", File.join(fixtures, "tenant-v1.json"))
+      assert_equal [0, ""], [code, err]
+      assert out.start_with?("PASS tenant-v1\n"), out
+
+      File.write(File.join(outside, "tenant-v1.json"), "{ nope")
+      out, err, code = run_cli("check", "--boot", v1_boot, "--fixtures", fixtures, "--format", "json")
+      assert_equal [2, ""], [code, err]
+      assert_equal [%w[tenant-v1 AJP001 fatal]], JSON.parse(out)["findings"].map { |f| f.values_at("fixture", "code", "severity") }
+    end
+  end
+
   def test_snapshot_check_boots_once_and_evaluates_each_case_once
     Dir.mktmpdir do |dir|
       cases = File.join(dir, "cases.rb")

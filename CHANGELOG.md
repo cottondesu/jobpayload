@@ -17,6 +17,17 @@ Changes on `main` that are not part of any released version yet.
   combined with `--update`. Text and JSON (schema v1, `"mode": "check"`)
   output.
 
+### Security
+
+- Harden `snapshot --check` baseline reads against the fixture's directory
+  entry being replaced during the check. Baselines are opened read-only with
+  `O_NOFOLLOW` and `O_NONBLOCK`, verified with `fstat` to be the same regular
+  file (device and inode) that `lstat` saw, and read from that descriptor
+  only. An entry swapped for a symlink, FIFO, directory or another file, or
+  removed, is now `invalid` (exit 2) without being read; previously it could
+  be followed, block, or be compared instead of the checked file. Platforms
+  without these flags fail closed. `jobpayload check` is unchanged.
+
 ### Changed
 
 - Tests and CI: macOS smoke test, capability-based skips for file names that

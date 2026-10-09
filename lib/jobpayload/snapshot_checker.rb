@@ -77,8 +77,13 @@ module JobPayload
       return invalid(name, path, "symbolic link (not followed)") if stat.symlink?
       return invalid(name, path, "not a regular file") unless stat.file?
 
+      # Opened without following symlinks or blocking, and read only after the
+      # open file is confirmed to be the one lstat saw.
+      read = SecureFixtureReader.read(path, stat)
+      return invalid(name, path, read.reason) if read.reason
+
       fixture = begin
-        Fixture.parse(path)
+        Fixture.parse_content(path, read.content)
       rescue SystemStackError => e
         # Some json versions parse recursively; nesting deep enough to
         # exhaust the stack must not abort the other fixtures.

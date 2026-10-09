@@ -18,6 +18,9 @@ end
 
 exit 1 if ENV["JOBPAYLOAD_TEST_BOOT_EXIT"]
 
+# Test-only race injection for `snapshot --check` (test/support/race_after_lstat.rb).
+require ENV["JOBPAYLOAD_TEST_RACE_HOOK"] if ENV["JOBPAYLOAD_TEST_RACE_HOOK"]
+
 if ENV["JOBPAYLOAD_TEST_BOOT_FAIL"]
   raise "simulated boot failure"
 end

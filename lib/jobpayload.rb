@@ -16,6 +16,7 @@ module JobPayload
   autoload :Canonical, "jobpayload/canonical"
   autoload :Snapshotter, "jobpayload/snapshotter"
   autoload :SnapshotChecker, "jobpayload/snapshot_checker"
+  autoload :SecureFixtureReader, "jobpayload/secure_fixture_reader"
   autoload :Fixture, "jobpayload/fixture"
   autoload :FixtureLoader, "jobpayload/fixture_loader"
   autoload :Checker, "jobpayload/checker"
