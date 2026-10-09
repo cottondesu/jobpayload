@@ -1,0 +1,383 @@
+name: Release
+
+# Publishes jobpayload to RubyGems (Trusted Publishing, OIDC) and creates the
+# GitHub release, when an annotated vMAJOR.MINOR.PATCH tag is pushed for the
+# current head of main. See docs/RELEASING.md for the setup it requires, the
+# procedure and how to recover from a partial failure.
+#
+#   validate ──> test (9 Linux jobs) ──┐
+#            └─> macos ────────────────┴─> build ──> publish ──> verify-rubygems ──> github-release ──> final-verify
+#                                                  (environment: release, approval, OIDC)
+#                                            └─> duplicate-version (only when the version is already on RubyGems; always fails)
+#
+# Nothing here runs for pull requests, branches or workflow_dispatch, and no
+# step ever creates or moves a tag, yanks a gem or pushes a gem twice. Every
+# value that reaches a shell comes through `env:`, never through a `${{ }}`
+# expression inside a script.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: {}
+
+# One run per tag; a run that is publishing is never cancelled by another.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  # The toolchain that builds the gem. Pinned: the .gem bytes (and so its
+  # SHA-256) depend on the RubyGems version that ships with this Ruby.
+  BUILD_RUBY: "3.4.11"
+  GUARD: script/release/release_guard.rb
+
+jobs:
+  validate:
+    name: Validate release tag
+    if: github.repository == 'cottondesu/jobpayload'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # read the release environment's protection rules
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+      commit: ${{ steps.tag.outputs.commit }}
+      tag_object: ${{ steps.tag.outputs.tag_object }}
+      tree: ${{ steps.tag.outputs.tree }}
+      rubygems_state: ${{ steps.rubygems.outputs.rubygems_state }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Tag (annotated vX.Y.Z, head of main, release notes)
+        id: tag
+        run: ruby "$GUARD" validate-tag
+      - name: Gem name and version
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+        run: ruby "$GUARD" check-spec
+      - name: Release environment protection
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Must be empty here: the flag may only exist on the release environment.
+          REPO_LEVEL_GATE: ${{ vars.RELEASE_GATE_READY }}
+        run: ruby "$GUARD" check-environment
+      - name: No GitHub release yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.tag.outputs.tag }}
+        run: ruby "$GUARD" check-github-release-absent
+      - name: RubyGems state
+        id: rubygems
+        env:
+          RELEASE_VERSION: ${{ steps.tag.outputs.version }}
+        run: ruby "$GUARD" rubygems-state
+
+  test:
+    name: Ruby ${{ matrix.ruby }} / Active Job ${{ matrix.activejob }}
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        ruby: ["3.3", "3.4", "4.0"]
+        activejob: ["7.2", "8.0", "8.1"]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activejob_${{ matrix.activejob }}.gemfile
+      # Linux file systems store non-UTF-8 file names: those tests must run, not skip.
+      JOBPAYLOAD_REQUIRE_NON_UTF8_FILENAMES: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ matrix.ruby }}
+      - name: Install dependencies (no cache)
+        run: bundle install --jobs 4
+      - name: Show versions
+        run: |
+          bundle exec ruby -e 'puts "ruby #{RUBY_VERSION}, activejob #{Gem.loaded_specs.fetch("activejob").version}"'
+      - name: Test (randomized order)
+        run: bundle exec rake test TESTOPTS=--verbose 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: No unexpected skips
+        env:
+          TEST_LOG: ${{ runner.temp }}/test.log
+          TEST_PLATFORM: linux
+        run: ruby "$GUARD" audit-skips
+      - name: Whitespace check
+        run: |
+          git diff --check
+          git diff --check "$(git hash-object -t tree /dev/null)" HEAD
+
+  macos:
+    name: macOS / Ruby 3.4 / Active Job 8.1
+    needs: validate
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/activejob_8.1.gemfile
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: "3.4"
+      - name: Install dependencies (no cache)
+        run: bundle install --jobs 4
+      - name: Show versions
+        run: |
+          bundle exec ruby -e 'puts "ruby #{RUBY_VERSION} (#{RUBY_PLATFORM}), activejob #{Gem.loaded_specs.fetch("activejob").version}"'
+      - name: Test (file system portability, SecureFixtureReader, symlinks, FIFO / races)
+        run: bundle exec rake test TESTOPTS=--verbose 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: No unexpected skips (non-UTF-8 file name capability skips allowed)
+        env:
+          TEST_LOG: ${{ runner.temp }}/test.log
+          TEST_PLATFORM: macos
+        run: ruby "$GUARD" audit-skips
+
+  build:
+    name: Build and freeze gem
+    needs: [validate, test, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      gem_filename: ${{ steps.build.outputs.gem_filename }}
+      gem_sha256: ${{ steps.build.outputs.gem_sha256 }}
+      gem_size: ${{ steps.build.outputs.gem_size }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+      artifact_digest: ${{ steps.upload.outputs.artifact-digest }}
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Build twice and compare (SOURCE_DATE_EPOCH = commit time)
+        id: build
+        env:
+          OUTPUT_DIR: ${{ runner.temp }}/release-gem
+        run: ruby "$GUARD" build
+      - name: Audit the package
+        env:
+          GEM_FILE: ${{ runner.temp }}/release-gem/${{ steps.build.outputs.gem_filename }}
+          # Keep in sync with the test matrix above.
+          AUDIT_RUBIES: "3.3 3.4 4.0"
+          AUDIT_ACTIVEJOB: "7.2 8.0 8.1"
+        run: ruby "$GUARD" audit-package
+      - name: Upload the frozen gem
+        id: upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-gem
+          path: ${{ runner.temp }}/release-gem/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Record the artifact archive digest
+        env:
+          ARTIFACT_DIGEST: ${{ steps.upload.outputs.artifact-digest }}
+          GEM_SHA256: ${{ steps.build.outputs.gem_sha256 }}
+        run: |
+          {
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| .gem file SHA-256 | \`$GEM_SHA256\` |"
+            echo "| Actions artifact archive digest (zip, not the gem) | \`$ARTIFACT_DIGEST\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Runs only when the version is already on RubyGems: says whether the
+  # published gem is byte-identical to this build, and always fails.
+  duplicate-version:
+    name: Version already on RubyGems
+    needs: [validate, build]
+    if: needs.validate.outputs.rubygems_state == 'present'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Compare with the published gem (read-only)
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+        run: ruby "$GUARD" diagnose-duplicate
+
+  publish:
+    name: Publish to RubyGems (Trusted Publishing)
+    needs: [validate, test, macos, build]
+    if: needs.validate.outputs.rubygems_state == 'absent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    # Required reviewers and the tag rule are configured on this environment
+    # in the repository settings; naming it here does not create them.
+    environment:
+      name: release
+      url: https://rubygems.org/gems/jobpayload/versions/${{ needs.validate.outputs.version }}
+    permissions:
+      contents: read
+      actions: read # re-check the release environment's protection rules after approval
+      id-token: write # RubyGems Trusted Publishing; this job only
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+      RELEASE_TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
+      GEM_FILENAME: ${{ needs.build.outputs.gem_filename }}
+      GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+      GEM_SIZE: ${{ needs.build.outputs.gem_size }}
+    steps:
+      - name: Release gate
+        env:
+          RELEASE_GATE_READY: ${{ vars.RELEASE_GATE_READY }}
+        run: |
+          if [ "${RELEASE_GATE_READY:-}" != "true" ]; then
+            echo "::error::RELEASE_GATE_READY is not \"true\" on the release environment; publishing is disabled (docs/RELEASING.md)"
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Download the frozen gem
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: ${{ runner.temp }}/release-gem
+          digest-mismatch: error
+      - name: Preflight (tag unchanged, still on main, not on RubyGems, environment, no release, frozen SHA)
+        env:
+          RELEASE_GATE_READY: ${{ vars.RELEASE_GATE_READY }}
+          GEM_DIR: ${{ runner.temp }}/release-gem
+          GH_TOKEN: ${{ github.token }}
+        run: ruby "$GUARD" publish-preflight
+      - name: Exchange the OIDC token for a short-lived RubyGems key
+        uses: rubygems/configure-rubygems-credentials@dc5a8d8553e6ee01fc26761a49e99e733d17954a # v2.1.0
+        with:
+          trusted-publisher: "true"
+      - name: Check the Trusted Publishing credentials
+        run: ruby "$GUARD" assert-oidc-credentials
+      - name: gem push (once)
+        timeout-minutes: 15
+        env:
+          GEM_DIR: ${{ runner.temp }}/release-gem
+        run: ruby "$GUARD" push
+
+  verify-rubygems:
+    name: Verify the gem served by RubyGems
+    needs: [validate, build, publish]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Download from rubygems.org and compare SHA-256
+        env:
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+        run: ruby "$GUARD" verify-published
+
+  github-release:
+    name: Create the GitHub release
+    needs: [validate, build, verify-rubygems]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the release; this job only
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Create the release for the existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
+          GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+        run: ruby "$GUARD" create-github-release
+
+  final-verify:
+    name: Final verification
+    needs: [validate, build, github-release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.validate.outputs.commit }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: ruby/setup-ruby@14594264cd68ce8a2345dd349bc3d138a4ef85c8 # v1.327.0
+        with:
+          ruby-version: ${{ env.BUILD_RUBY }}
+          bundler: none
+      - name: Tag, GitHub release and RubyGems agree
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.validate.outputs.version }}
+          RELEASE_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_TAG_OBJECT: ${{ needs.validate.outputs.tag_object }}
+          GEM_SHA256: ${{ needs.build.outputs.gem_sha256 }}
+        run: ruby "$GUARD" final-verify
