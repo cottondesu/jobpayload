@@ -24,9 +24,24 @@ module JobPayload
     end
 
     def self.parse(path)
+      build(path) { File.binread(path) }
+    end
+
+    # Like parse, for bytes the caller has already read from +path+ (for
+    # example through SecureFixtureReader); +path+ only names the fixture.
+    def self.parse_content(path, content)
+      build(path) { content }
+    end
+
+    def self.build(path)
       basename = File.basename(path, ".json")
       reason = catch(:invalid) do
-        data = parse_json(path)
+        content = begin
+          yield
+        rescue SystemCallError => e
+          invalid!("cannot read file: #{e.message}")
+        end
+        data = parse_json(content)
         validate!(data, basename)
         return new(name: data["name"], path: path, job: data["job"], source: data["source"])
       end
@@ -35,8 +50,8 @@ module JobPayload
       Invalid.new(JobPayload.scrub_utf8(basename), path, JobPayload.scrub_utf8(reason))
     end
 
-    def self.parse_json(path)
-      content = File.binread(path).force_encoding(Encoding::UTF_8)
+    def self.parse_json(content)
+      content = content.dup.force_encoding(Encoding::UTF_8)
       invalid!("file is not valid UTF-8") unless content.valid_encoding?
       data = JSON.parse(content, max_nesting: false)
       # Some json versions decode a lone surrogate escape ("\udc80") into
@@ -45,8 +60,6 @@ module JobPayload
       data
     rescue JSON::ParserError => e
       invalid!("invalid JSON: #{e.message.lines.first.to_s.strip}")
-    rescue SystemCallError => e
-      invalid!("cannot read file: #{e.message}")
     end
 
     # Iterative, so that deeply nested fixtures cannot exhaust the stack here.
@@ -89,6 +102,6 @@ module JobPayload
     def self.invalid!(reason)
       throw :invalid, reason
     end
-    private_class_method :parse_json, :valid_strings?, :validate!, :invalid!
+    private_class_method :build, :parse_json, :valid_strings?, :validate!, :invalid!
   end
 end

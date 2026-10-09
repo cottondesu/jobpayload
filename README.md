@@ -243,14 +243,16 @@ payloads.
 | `identical` | The stored `job` matches what the current code serializes | 0 |
 | `different` | The payload the current code writes differs from the stored `job` | 1 |
 | `missing` | No fixture file for the case | 1 |
-| `invalid` | The fixture cannot be used: invalid JSON or UTF-8, wrong schema, name mismatch, a symbolic link (never followed, even when it points to a valid fixture), not a regular file (such as a directory or FIFO), unreadable or inaccessible (for example an unsearchable directory), or a `job` that `snapshot` could never have written (a non-finite number such as `1e400`, or nesting deeper than `snapshot`'s limit of 100) | 2 |
+| `invalid` | The fixture cannot be used: invalid JSON or UTF-8, wrong schema, name mismatch, a symbolic link (never followed, even when it points to a valid fixture), not a regular file (such as a directory or FIFO), replaced or removed while it is being checked, unreadable or inaccessible (for example an unsearchable directory), or a `job` that `snapshot` could never have written (a non-finite number such as `1e400`, or nesting deeper than `snapshot`'s limit of 100) | 2 |
 
 The exit status is the highest that applies (`2` > `1` > `0`). Case errors,
 boot errors and usage errors exit 2 as for `snapshot`. Fixtures with no
 matching case are ignored. A `--output` directory that does not exist is not an
 error: every case is reported `missing` (exit 1), so check the path if
 everything is missing. Only the fixture file entry itself must not be a symbolic
-link; `--output` may be one.
+link; `--output` may be one. Baselines are read in a way that
+resists the file being swapped during the check; see
+[Race-safe baseline reading](#race-safe-baseline-reading-snapshot---check).
 
 Text output has one line per case, in name order, and a summary. The status
 says whether a fixture differs, not where; compare the files (for example
@@ -704,6 +706,49 @@ v0.1.0 deliberately does **not**:
   passing `--environment production` prints a warning. Do not point jobpayload
   at production databases. Note that a `DATABASE_URL` set in your shell is
   still used by Rails in the `test` environment.
+
+### Race-safe baseline reading (`snapshot --check`)
+
+`snapshot --check` reads each baseline so that the fixture's directory entry
+cannot be swapped between the type check and the read:
+
+1. `lstat` the fixture path. A symbolic link, directory, FIFO or anything else
+   that is not a regular file is `invalid`; nothing is opened.
+2. Open it read-only with `O_NOFOLLOW` (a symbolic link put in its place is
+   refused instead of followed) and `O_NONBLOCK` (a FIFO put in its place
+   cannot block the open waiting for a writer). The open never creates or
+   truncates anything.
+3. `fstat` the open descriptor. It must be a regular file with the same device
+   and inode numbers `lstat` reported, so a different file renamed into place
+   is detected. Only then is anything read.
+4. Read the bytes from that same descriptor (the path is never opened again)
+   and parse them.
+
+An entry that is replaced, turned into a symlink, FIFO or directory, or removed
+between steps 1 and 2 is reported as `invalid` (exit 2), with a reason such as
+`replaced by a different file after it was checked`; its contents are never
+read, so they cannot leak into the output or make the check pass. If the
+platform lacks `O_NOFOLLOW` or `O_NONBLOCK`, every baseline is `invalid`
+rather than read without them.
+
+What this does **not** guarantee:
+
+- Only the final path component is protected. Parent directories, including a
+  symlinked `--output` directory (which is allowed), are resolved normally and
+  are trusted; replacing a parent directory is not detected.
+- The device/inode check pins the file that was opened, not its contents: a
+  process that rewrites that same file while it is read is not detected.
+- A hard link is a regular file and is read like any other.
+- Something swapped in after `lstat` is opened before `fstat` can reject it.
+  Opening is non-blocking and never makes a terminal the controlling one, but
+  opening some device nodes can still have side effects of its own.
+- Inode reuse, network file systems and unusual file systems may weaken these
+  checks; they are not a complete guarantee on every file system.
+- It does not make untrusted code safe: your application and cases file still
+  run as described above.
+
+`jobpayload check` is unchanged: it still reads its fixtures by path and
+follows symbolic links, as in 0.1.0.
 
 ## Development
 

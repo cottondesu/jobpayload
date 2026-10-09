@@ -251,15 +251,15 @@ class SnapshotCheckerTest < Minitest::Test
     end
   end
 
-  # Records every path Fixture.parse is asked to read.
+  # Records every path whose bytes reach the fixture parser.
   def parsed_paths
     parsed = []
-    original = JobPayload::Fixture.method(:parse)
-    JobPayload::Fixture.define_singleton_method(:parse) { |p| parsed << p && original.call(p) }
+    original = JobPayload::Fixture.method(:parse_content)
+    JobPayload::Fixture.define_singleton_method(:parse_content) { |p, c| parsed << p && original.call(p, c) }
     yield
     parsed
   ensure
-    JobPayload::Fixture.define_singleton_method(:parse, original)
+    JobPayload::Fixture.define_singleton_method(:parse_content, original)
   end
 
   # A baseline must be a regular file. Symlinks are invalid whatever they
