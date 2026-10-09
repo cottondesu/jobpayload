@@ -2,37 +2,64 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## 0.2.0
 
-Changes on `main` that are not part of any released version yet.
+0.2.0 adds snapshot drift detection. Everything 0.1.0 does is unchanged:
+`snapshot`, `snapshot --update` and `check` behave as before, and the fixture
+schema (`jobpayload_schema: 1`), the JSON output schema (`schema_version: 1`),
+finding codes and exit codes are the same. There are no breaking changes.
 
 ### Added
 
-- `jobpayload snapshot --check`: compares what the current code serializes for
-  each snapshot case with the stored fixture, without writing anything.
-  Statuses `identical`, `different` and `missing` (exit 1) and `invalid`
-  (exit 2); the highest exit status wins. The whole `job` object is compared:
-  the current payload normalized as `snapshot` writes it, the stored one as
-  stored. `source` metadata, key order and whitespace are ignored. Cannot be
-  combined with `--update`. Text and JSON (schema v1, `"mode": "check"`)
-  output.
+- `jobpayload snapshot --check`: serializes every snapshot case with the
+  current code and compares it with the baseline fixture already stored in
+  `--output`, to catch unintended changes to the payloads new code enqueues.
+  - **Read-only:** nothing in `--output` is written, created, renamed or
+    deleted, not even a missing `--output` directory. Cannot be combined with
+    `--update`.
+  - **Comparison:** the whole `job` object, as canonical JSON. The current
+    payload is normalized as `snapshot` writes it; the stored baseline is
+    compared as stored (never re-normalized), so any edit to it, volatile
+    metadata included, is reported. `source` metadata, key order, whitespace
+    and equivalent JSON spellings are ignored; value types (`1` vs `1.0`) and
+    array order are not.
+  - **Statuses and exit codes:** `identical` (0), `different` (1), `missing`
+    (1) and `invalid` (2); the highest exit status wins (2 > 1 > 0). A
+    baseline is `invalid` when it is not valid schema v1 JSON, is a symbolic
+    link (never followed), is not a regular file, cannot be read, or holds a
+    `job` that `snapshot` could never have written. Fixtures with no matching
+    case are ignored.
+  - **Output:** deterministic text, or JSON (`schema_version: 1`,
+    `"mode": "check"`). It reports whether each baseline differs, not where
+    (no field-level diff).
 
 ### Security
 
-- Harden `snapshot --check` baseline reads against the fixture's directory
-  entry being replaced during the check. Baselines are opened read-only with
-  `O_NOFOLLOW` and `O_NONBLOCK`, verified with `fstat` to be the same regular
-  file (device and inode) that `lstat` saw, and read from that descriptor
-  only. An entry swapped for a symlink, FIFO, directory or another file, or
-  removed, is now `invalid` (exit 2) without being read; previously it could
-  be followed, block, or be compared instead of the checked file. Platforms
-  without these flags fail closed. `jobpayload check` is unchanged.
+- `snapshot --check` reads baselines in a way that resists the fixture's
+  directory entry being replaced during the check: after `lstat`, the file
+  is opened read-only with `O_NOFOLLOW` and `O_NONBLOCK`, verified with
+  `fstat` to be the same regular file (device and inode), and read only from
+  that descriptor. An entry swapped for a symlink, FIFO, directory or another
+  file, or removed, is `invalid` (exit 2) and never read, so it cannot leak
+  file contents into the output, block the check, or make it pass. Platforms
+  without these flags fail closed. This protects the final path component
+  only; see README "Race-safe baseline reading" for what is not covered.
+  The hardening was made before `snapshot --check` was released, so no
+  released version is affected. `jobpayload check` is unchanged (it reads by
+  path and follows symbolic links, as in 0.1.0).
 
 ### Changed
 
-- Tests and CI: macOS smoke test, capability-based skips for file names that
-  are not valid UTF-8, and a separate Rails `main` GlobalID regression
-  workflow. No change to runtime behaviour.
+- Internal: `JobPayload::Fixture.parse_content` parses fixture bytes the
+  caller has already read; `Fixture.parse` keeps its behaviour and shares the
+  same validation.
+- Tests and CI (no runtime change): tests for `snapshot --check` and its
+  race-safe reads (deterministic lstat/open races, FIFO deadlines, descriptor
+  leaks, real-process runs); a macOS smoke job; capability-based skips for
+  file names that are not valid UTF-8; and a separate Rails `main` GlobalID
+  regression workflow (not a supported version).
+- README: documents `snapshot --check`, its security boundaries and the
+  updated version references.
 
 ## 0.1.0
 

@@ -16,6 +16,7 @@ application can still be deserialized by the **new** version.
 - [Quick start](#quick-start)
 - [Creating snapshot cases](#creating-snapshot-cases)
 - [Generating baseline fixtures](#generating-baseline-fixtures)
+  - [Detecting snapshot drift (`snapshot --check`)](#detecting-snapshot-drift-snapshot---check)
 - [Checking old fixtures on new code](#checking-old-fixtures-on-new-code)
 - [Two-way rolling-deploy checking](#two-way-rolling-deploy-checking)
 - [GlobalID / inconclusive semantics](#globalid--inconclusive-semantics)
@@ -28,6 +29,7 @@ application can still be deserialized by the **new** version.
 - [Non-goals](#non-goals)
 - [Known limitations](#known-limitations)
 - [Security / safety notes](#security--safety-notes)
+  - [Race-safe baseline reading (`snapshot --check`)](#race-safe-baseline-reading-snapshot---check)
 
 ## What jobpayload checks
 
@@ -47,7 +49,10 @@ A baseline fixture is compatible with the current application when:
    subclasses, nested arrays/hashes and GlobalID lookups, in your real
    (test) environment.
 
-v0.1.0 checks **backward-read compatibility only**: old payload → new code.
+`check` checks **backward-read compatibility only**: old payload → new code.
+Since v0.2.0, `snapshot --check` can also detect *drift*: whether the current
+code still serializes each snapshot case exactly as its stored baseline
+(see [Detecting snapshot drift](#detecting-snapshot-drift-snapshot---check)).
 
 ## Why queued payload compatibility matters
 
@@ -194,7 +199,7 @@ One JSON file per fixture, schema v1:
   "name": "billing-money-v1",
   "source": {
     "active_job_version": "8.1.4",
-    "jobpayload_version": "0.1.0",
+    "jobpayload_version": "0.2.0",
     "rails_version": "8.1.4",
     "ruby_version": "3.4.8"
   }
@@ -271,7 +276,7 @@ With `--format json` the document (schema v1) is:
 ```json
 {
   "schema_version": 1,
-  "tool_version": "0.1.0",
+  "tool_version": "0.2.0",
   "mode": "check",
   "status": "fail",
   "summary": {
@@ -398,7 +403,8 @@ database (seeds, fixtures, or a boot file) to get a conclusive answer.
 
 ## Finding codes
 
-Finding codes are a stable API for 0.1.x.
+Finding codes are a stable API: 0.2.0 keeps every 0.1.0 code and its meaning
+unchanged.
 
 | Code | Name | Kind | Meaning |
 | --- | --- | --- | --- |
@@ -503,7 +509,7 @@ bundle exec jobpayload check --format json
 ```json
 {
   "schema_version": 1,
-  "tool_version": "0.1.0",
+  "tool_version": "0.2.0",
   "status": "fail",
   "summary": {
     "fixtures": 3,
@@ -562,7 +568,7 @@ bundle exec jobpayload check --format json
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | JSON output schema version. Always `1` in 0.1.x. |
+| `schema_version` | JSON output schema version. Always `1` in 0.1.x and 0.2.0. |
 | `tool_version` | jobpayload version. |
 | `status` | `"pass"` (exit 0), `"fail"` (exit 1) or `"tool_error"` (exit 2). With `--fail-on-inconclusive`, inconclusive fixtures make it `"fail"`. |
 | `summary.fixtures` | Number of fixture files checked. |
@@ -582,7 +588,7 @@ Backtraces are never included in JSON output. The same input always produces
 byte-identical JSON. Exception messages, fixture file names and paths are
 emitted as valid UTF-8 (invalid bytes become U+FFFD).
 
-**Stability policy.** Within `schema_version: 1` (all 0.1.x releases),
+**Stability policy.** Within `schema_version: 1` (0.1.x and 0.2.0),
 existing fields are never removed or renamed, and the meaning and allowed
 values of existing fields do not change. New fields may be added, so consumers
 should ignore fields they do not know. Any incompatible change bumps
@@ -617,7 +623,7 @@ For two-way checking, check out both the base and the head revision (for
 example two `actions/checkout` steps with different `path:` and `ref:`), then
 run `check` twice: base fixtures → head app, and head fixtures → base app, as
 shown in [Two-way rolling-deploy checking](#two-way-rolling-deploy-checking).
-jobpayload 0.1.0 does not orchestrate checkouts itself.
+jobpayload does not orchestrate checkouts itself.
 
 ## Supported Ruby / Active Job versions
 
@@ -640,7 +646,7 @@ built-in fixture set.
 
 ## Non-goals
 
-v0.1.0 deliberately does **not**:
+jobpayload deliberately does **not**:
 
 - execute `perform` or any job business logic, enqueue, or retry jobs
 - check `perform` arity or execution semantics. A successful deserialize does
@@ -655,6 +661,8 @@ v0.1.0 deliberately does **not**:
 - orchestrate forward/two-way compatibility automatically
 - re-serialize deserialized arguments (round-trip / re-enqueue compatibility)
 - provide ignore/suppression lists or a configuration file
+- show field-level (structural) diffs: `snapshot --check` reports only
+  whether a baseline differs, not where
 
 ## Known limitations
 
@@ -755,7 +763,7 @@ follows symbolic links, as in 0.1.0.
 ```sh
 bundle install
 bundle exec rake test     # Minitest; randomized order
-bundle exec rake build    # pkg/jobpayload-0.1.0.gem
+bundle exec rake build    # pkg/jobpayload-0.2.0.gem
 
 # Another Active Job version:
 BUNDLE_GEMFILE=gemfiles/activejob_7.2.gemfile bundle install
